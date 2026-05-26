@@ -70,6 +70,25 @@ export function _resetMemoryRootCache(): void {
   _memoryRootCache = undefined;
 }
 
+/**
+ * #2105: Resolve the full path to the SQLite memory database.
+ * Precedence (highest to lowest):
+ *   1. cliFlag             - explicit --path flag passed by a subcommand
+ *   2. CLAUDE_FLOW_DB_PATH - full file-path override (new in #2105)
+ *   3. getMemoryRoot()/memory.db - directory from CLAUDE_FLOW_MEMORY_PATH /
+ *                                  config / default cwd/.swarm
+ */
+export function resolveDbPath(cliFlag?: string): string {
+  if (cliFlag && cliFlag.trim().length > 0) {
+    return path.resolve(cliFlag);
+  }
+  const envDb = process.env.CLAUDE_FLOW_DB_PATH;
+  if (envDb && envDb.trim().length > 0) {
+    return path.resolve(envDb);
+  }
+  return path.join(getMemoryRoot(), 'memory.db');
+}
+
 // ADR-053: Lazy import of AgentDB v3 bridge
 let _bridge: typeof import('./memory-bridge.js') | null | undefined;
 async function getBridge(): Promise<typeof import('./memory-bridge.js') | null> {

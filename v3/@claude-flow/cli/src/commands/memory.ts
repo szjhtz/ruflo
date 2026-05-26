@@ -15,6 +15,15 @@ const BACKENDS = [
   { value: 'hybrid', label: 'Hybrid', hint: 'SQLite + AgentDB (recommended)' },
   { value: 'memory', label: 'In-Memory', hint: 'Fast but non-persistent' }
 ];
+// #2105: shared --path option for memory subcommands.
+// Precedence: --path > CLAUDE_FLOW_DB_PATH env var > default root
+const DB_PATH_OPTION = {
+  name: 'path',
+  description:
+    'Override DB file path (also: CLAUDE_FLOW_DB_PATH env var). ' +
+    'Precedence: --path > CLAUDE_FLOW_DB_PATH > CLAUDE_FLOW_MEMORY_PATH/memory.db > cwd/.swarm/memory.db',
+  type: 'string' as const,
+};
 
 // Store command
 const storeCommand: Command = {
@@ -63,7 +72,8 @@ const storeCommand: Command = {
       description: 'Update if key exists (insert or replace)',
       type: 'boolean',
       default: false
-    }
+    },
+    DB_PATH_OPTION
   ],
   examples: [
     { command: 'claude-flow memory store -k "api/auth" -v "JWT implementation"', description: 'Store text' },
@@ -111,7 +121,8 @@ const storeCommand: Command = {
 
     // Use direct sql.js storage with automatic embedding generation
     try {
-      const { storeEntry } = await import('../memory/memory-initializer.js');
+      const { storeEntry, resolveDbPath: _rdbStore } = await import('../memory/memory-initializer.js');
+      const dbPath = _rdbStore(ctx.flags.path as string | undefined);
 
       if (asVector) {
         output.writeln(output.dim('  Generating embedding vector...'));
@@ -124,7 +135,8 @@ const storeCommand: Command = {
         generateEmbeddingFlag: true, // Always generate embeddings for semantic search
         tags,
         ttl,
-        upsert
+        upsert,
+        dbPath
       });
 
       if (!result.success) {
@@ -191,7 +203,8 @@ const retrieveCommand: Command = {
       description: 'Print only the stored value to stdout (no wrapper)',
       type: 'boolean',
       default: false
-    }
+    },
+    DB_PATH_OPTION
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const key = ctx.flags.key as string || ctx.args[0];
@@ -204,8 +217,9 @@ const retrieveCommand: Command = {
 
     // Use sql.js directly for consistent data access
     try {
-      const { getEntry } = await import('../memory/memory-initializer.js');
-      const result = await getEntry({ key, namespace });
+      const { getEntry, resolveDbPath: _rdbRetrieve } = await import('../memory/memory-initializer.js');
+      const dbPathRetrieve = _rdbRetrieve(ctx.flags.path as string | undefined);
+      const result = await getEntry({ key, namespace, dbPath: dbPathRetrieve });
 
       if (!result.success) {
         output.printError(`Failed to retrieve: ${result.error}`);
@@ -310,7 +324,8 @@ const searchCommand: Command = {
       description: 'Use SmartRetrieval pipeline (query expansion, RRF, MMR, recency)',
       type: 'boolean',
       default: false
-    }
+    },
+    DB_PATH_OPTION
   ],
   examples: [
     { command: 'claude-flow memory search -q "authentication patterns"', description: 'Semantic search' },
@@ -362,7 +377,8 @@ const searchCommand: Command = {
 
     // Use direct sql.js search with vector similarity
     try {
-      const { searchEntries } = await import('../memory/memory-initializer.js');
+      const { searchEntries, resolveDbPath: _rdbSearch } = await import('../memory/memory-initializer.js');
+      const dbPathSearch = _rdbSearch(ctx.flags.path as string | undefined);
       const useSmart = (ctx.flags.smart || ctx.flags.s) as boolean;
 
       let results: { key: string; score: number; namespace: string; preview: string }[];
@@ -400,6 +416,7 @@ const searchCommand: Command = {
             namespace: req.namespace || namespace,
             limit: req.limit || limit * 3,
             threshold: req.threshold ?? threshold,
+            dbPath: dbPathSearch,
           });
           return {
             results: r.results.map(e => ({
@@ -433,7 +450,8 @@ const searchCommand: Command = {
           query,
           namespace,
           limit,
-          threshold
+          threshold,
+          dbPath: dbPathSearch
         });
 
         if (!searchResult.success) {
@@ -514,7 +532,8 @@ const listCommand: Command = {
       description: 'Maximum entries',
       type: 'number',
       default: 20
-    }
+    },
+    DB_PATH_OPTION
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const namespace = ctx.flags.namespace as string;
@@ -522,8 +541,9 @@ const listCommand: Command = {
 
     // Use sql.js directly for consistent data access
     try {
-      const { listEntries } = await import('../memory/memory-initializer.js');
-      const listResult = await listEntries({ namespace, limit, offset: 0 });
+      const { listEntries, resolveDbPath: _rdbList } = await import('../memory/memory-initializer.js');
+      const dbPathList = _rdbList(ctx.flags.path as string | undefined);
+      const listResult = await listEntries({ namespace, limit, offset: 0, dbPath: dbPathList });
 
       if (!listResult.success) {
         output.printError(`Failed to list: ${listResult.error}`);
@@ -620,7 +640,8 @@ const deleteCommand: Command = {
       description: 'Skip confirmation',
       type: 'boolean',
       default: false
-    }
+    },
+    DB_PATH_OPTION
   ],
   examples: [
     { command: 'claude-flow memory delete -k "mykey"', description: 'Delete entry with default namespace' },
@@ -652,8 +673,9 @@ const deleteCommand: Command = {
 
     // Use sql.js directly for consistent data access (Issue #980)
     try {
-      const { deleteEntry } = await import('../memory/memory-initializer.js');
-      const result = await deleteEntry({ key, namespace });
+      const { deleteEntry, resolveDbPath: _rdbDelete } = await import('../memory/memory-initializer.js');
+      const dbPathDelete = _rdbDelete(ctx.flags.path as string | undefined);
+      const result = await deleteEntry({ key, namespace, dbPath: dbPathDelete });
 
       if (!result.success) {
         output.printError(result.error || 'Failed to delete');
@@ -679,6 +701,7 @@ const deleteCommand: Command = {
 const statsCommand: Command = {
   name: 'stats',
   description: 'Show memory statistics',
+  options: [DB_PATH_OPTION],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     // Call MCP memory/stats tool for real statistics
     try {
