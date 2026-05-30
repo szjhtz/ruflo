@@ -92,15 +92,29 @@ async function main() {
   const docEmbeds = cached.embeds;
   console.log(`Loaded ${docIds.length} cached BGE embeddings`);
 
-  // BM25 setup — multi-field over (title, text) per doc.
-  const { tokenize, buildCorpusStats, multiFieldBM25 } = await import(join(CLI_ROOT, 'dist/src/memory/hybrid-retrieval.js'));
-  const titleDocs = corpus.map((d) => tokenize(d.title || ''));
-  const textDocs = corpus.map((d) => tokenize(d.text || ''));
-  const titleStats = buildCorpusStats(titleDocs);
-  const textStats = buildCorpusStats(textDocs);
-  const SUBJECT_WEIGHT = Number(process.env.SUBJECT_WEIGHT ?? 1.0);  // titles in BEIR are short, neutral weight is fine
-  const BODY_WEIGHT = Number(process.env.BODY_WEIGHT ?? 1.0);
-  console.log(`BM25: multi-field (title sw=${SUBJECT_WEIGHT}, text bw=${BODY_WEIGHT})`);
+  // BM25 setup — USE_LUCENE_BM25=1 uses Porter+Lucene-stopword BM25 (matches
+  // published BEIR baselines); default is hybrid-retrieval's multi-field BM25.
+  const USE_LUCENE_BM25 = process.env.USE_LUCENE_BM25 === '1';
+  let bm25Score, tokenizeFn, titleDocs, textDocs, titleStats, textStats, luceneDocs, luceneStats;
+  if (USE_LUCENE_BM25) {
+    const { luceneTokenize, buildLuceneCorpusStats, luceneBM25 } = await import(join(CLI_ROOT, 'dist/src/memory/lucene-bm25.js'));
+    tokenizeFn = luceneTokenize;
+    luceneDocs = corpus.map((d) => luceneTokenize(`${d.title || ''} ${d.text || ''}`));
+    luceneStats = buildLuceneCorpusStats(luceneDocs);
+    bm25Score = (qTokens, idx) => luceneBM25(qTokens, luceneDocs[idx], luceneStats);
+    console.log(`BM25: Lucene-style (Porter stem + Lucene stopwords + length norm) — ADR-088`);
+  } else {
+    const { tokenize, buildCorpusStats, multiFieldBM25 } = await import(join(CLI_ROOT, 'dist/src/memory/hybrid-retrieval.js'));
+    tokenizeFn = tokenize;
+    titleDocs = corpus.map((d) => tokenize(d.title || ''));
+    textDocs = corpus.map((d) => tokenize(d.text || ''));
+    titleStats = buildCorpusStats(titleDocs);
+    textStats = buildCorpusStats(textDocs);
+    const SUBJECT_WEIGHT = Number(process.env.SUBJECT_WEIGHT ?? 1.0);
+    const BODY_WEIGHT = Number(process.env.BODY_WEIGHT ?? 1.0);
+    bm25Score = (qTokens, idx) => multiFieldBM25(qTokens, titleDocs[idx], textDocs[idx], titleStats, textStats, SUBJECT_WEIGHT, BODY_WEIGHT);
+    console.log(`BM25: multi-field (title sw=${SUBJECT_WEIGHT}, text bw=${BODY_WEIGHT})`);
+  }
 
   // Optional cross-encoder reranker.
   let crossEncoder = null;
@@ -136,12 +150,11 @@ async function main() {
     for (let i = 0; i < docEmbeds.length; i++) denseScored[i] = { id: docIds[i], score: cosine(qEmb, docEmbeds[i]) };
     denseScored.sort((a, b) => b.score - a.score);
 
-    // §2 — BM25 retrieval (over corpus order, then map to docIds)
-    const qTokens = tokenize(qtext);
+    // §2 — BM25 retrieval (Lucene or multi-field depending on USE_LUCENE_BM25)
+    const qTokens = tokenizeFn(qtext);
     const bm25Scored = new Array(corpus.length);
     for (let i = 0; i < corpus.length; i++) {
-      const s = multiFieldBM25(qTokens, titleDocs[i], textDocs[i], titleStats, textStats, SUBJECT_WEIGHT, BODY_WEIGHT);
-      bm25Scored[i] = { id: corpusIdxToId[i], score: s };
+      bm25Scored[i] = { id: corpusIdxToId[i], score: bm25Score(qTokens, i) };
     }
     bm25Scored.sort((a, b) => b.score - a.score);
 

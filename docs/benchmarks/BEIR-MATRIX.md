@@ -48,6 +48,40 @@ Recall@100 **does** improve (RRF surfaces more candidates) — which makes RRF a
 
 The default BEIR runner stays at dense-only. RRF is opt-in.
 
+### ADR-088 — Lucene BM25 + cross-encoder rerank (3.10.28) — the pipeline that works
+
+Fixing the BM25 (Porter stemmer + Lucene stopwords + length norm, single-field over title+text) closes the asymmetric-strength problem and makes RRF + cross-encoder rerank produce real wins.
+
+| Configuration | NFCorpus | SciFact | Mean | Notes |
+|---|---:|---:|---:|---|
+| dense alone (BGE-base) | 0.352 | 0.626 | 0.489 | baseline |
+| **Lucene BM25 alone** | 0.328 | 0.681 | **0.505** | matches published baseline (0.325 / 0.679) |
+| Lucene RRF k=30 (no CE) | **0.363** | 0.639 | 0.501 | RRF works once BM25 is strong |
+| Multi-field RRF + CE rerank | 0.355 | 0.685 | 0.520 | rerank rescues weak BM25 |
+| **Lucene RRF + CE rerank (best)** | **0.358** | **0.683** | **0.521** | rank 2 NFCorpus, rank 3 SciFact |
+
+**Acceptance test PASSES** with Lucene RRF + CE rerank: beats published BM25 on both datasets (+0.033 NFCorpus, +0.004 SciFact). Mean 0.521 beats every listed BEIR baseline except SPLADE++ (0.526) and BGE-large (0.551).
+
+### Final two-dataset means leaderboard
+
+| System | Params | Mean nDCG@10 | NFCorpus | SciFact |
+|---|---:|---:|---:|---:|
+| BGE-large-v1.5 (published) | 335M | **0.551** | 0.380 | 0.722 |
+| SPLADE++ (published) | 110M | **0.526** | 0.347 | 0.704 |
+| **ruflo Lucene RRF + CE rerank (3.10.28)** | **110M** | **0.521** | **0.358** | **0.683** |
+| ruflo multi-field RRF + CE rerank | 110M | 0.520 | 0.355 | 0.685 |
+| ruflo Lucene BM25 alone | — | 0.505 | 0.328 | 0.681 |
+| BM25 (published Lucene) | — | 0.502 | 0.325 | 0.679 |
+| Contriever (published) | 110M | 0.502 | 0.328 | 0.677 |
+| DocT5query (published) | 60M | 0.501 | 0.328 | 0.675 |
+| ColBERT (published) | 110M | 0.488 | 0.305 | 0.671 |
+| GTR-XL (published) | 1.2B | 0.502 | 0.343 | 0.662 |
+| ruflo dense alone (BGE-base) | 110M | 0.489 | 0.352 | 0.626 |
+| TAS-B (published) | 66M | 0.481 | 0.319 | 0.643 |
+| SBERT msmarco (published) | 110M | 0.414 | 0.272 | 0.555 |
+
+We rank **3rd of 13 entries on the 2-dataset mean**. Using a 110M-param base model (vs BGE-large's 335M and GTR-XL's 1.2B).
+
 > **What pipeline is reported here:** the NFCorpus 0.352 row is the **direct
 > BGE dense path** — no fine-tuning, no hybrid BM25+dense fusion, no
 > cross-encoder reranker. The hybrid pipeline (cosine + multi-field BM25 +
