@@ -170,6 +170,24 @@ if (!od.metaharness) { console.error('missing metaharness in optionalDependencie
 if (j.dependencies && j.dependencies.metaharness) { console.error('metaharness leaked into dependencies'); process.exit(1); }
 " 2>/dev/null && ok || bad "ruflo wrapper missing metaharness optionalDep"
 
+step "17o. test-mcp-tools runtime contract test (ADR-150 — iter 23)"
+F="$ROOT/scripts/test-mcp-tools.mjs"
+miss=""
+[[ -x "$F" ]] || miss="$miss not-executable"
+node --check "$F" 2>/dev/null || miss="$miss syntax-error"
+# Asserts the runtime contract literally: { success, data, degraded, exitCode }
+grep -q "result has 'success'" "$F" || miss="$miss no-success-assertion"
+grep -q "result has 'data'" "$F" || miss="$miss no-data-assertion"
+grep -q "result has 'degraded'" "$F" || miss="$miss no-degraded-assertion"
+grep -q "result has 'exitCode'" "$F" || miss="$miss no-exitcode-assertion"
+# All 7 tool names enumerated
+for tool in metaharness_score metaharness_genome metaharness_mcp_scan metaharness_threat_model metaharness_oia_audit metaharness_audit_list metaharness_audit_trend; do
+  grep -q "${tool}" "$F" || miss="$miss missing-${tool}"
+done
+# Graceful skip when dist absent (so the script is smoke-runnable pre-build)
+grep -q "SKIPPED" "$F" || miss="$miss no-skip-doc"
+[[ -z "$miss" ]] && ok || bad "$miss"
+
 step "17n. CLAUDE.md documents MetaHarness integration (ADR-150 discoverability — iter 22)"
 F="$ROOT/../../CLAUDE.md"
 miss=""
