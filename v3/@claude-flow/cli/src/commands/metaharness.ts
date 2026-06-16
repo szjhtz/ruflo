@@ -117,7 +117,43 @@ export const metaharnessCommand: Command = {
   async action(context: CommandContext): Promise<CommandResult> {
     const args = (context as { args?: string[] }).args || [];
     const subcommand = args[0];
-    const subArgs = args.slice(1);
+    const positionalRest = args.slice(1);
+
+    // iter 42 — round-trip parsed flags back into argv so the
+    // subprocess receives them. Without this the CLI parser consumes
+    // `--a foo` into `flags.a` and the script sees an empty argv,
+    // emitting a graceful-but-wrong "missing arg" payload (the iter-36
+    // bug surfaced during iter-42 dispatcher round-trip testing).
+    const ctxFlags = (context as { flags?: Record<string, unknown> }).flags || {};
+    const reconstructedFlags: string[] = [];
+    const SKIP_KEYS = new Set([
+      '_',           // parser's positional bucket
+      'config',      // global CLI flag (--config <path>); consumed before dispatch
+      'verbose', 'v',
+      'quiet', 'q',
+      'help', 'h',
+    ]);
+    // Parser normalizes kebab-case → camelCase (--per-dimension → perDimension).
+    // Plugin scripts expect kebab-case at argv, so we re-kebab here.
+    const toKebab = (s: string): string =>
+      s.replace(/([A-Z])/g, (m) => `-${m.toLowerCase()}`);
+    for (const [key, value] of Object.entries(ctxFlags)) {
+      if (SKIP_KEYS.has(key)) continue;
+      if (value === undefined || value === null) continue;
+      // Always use --kebab even for single-char keys: similarity.mjs
+      // matches literal `--a` / `--b` via argv loop, not via a parser.
+      // Reconstructing as short-form (`-a`) would silently misroute.
+      const flag = `--${toKebab(key)}`;
+      if (typeof value === 'boolean') {
+        if (value === true) reconstructedFlags.push(flag);
+        // false → omit (--no-X handled by users invoking explicit --no- form)
+      } else if (Array.isArray(value)) {
+        for (const v of value) reconstructedFlags.push(flag, String(v));
+      } else {
+        reconstructedFlags.push(flag, String(value));
+      }
+    }
+    const subArgs = [...positionalRest, ...reconstructedFlags];
 
     if (!subcommand || subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
       output.writeln(output.bold('npx ruflo metaharness <subcommand> [options]'));

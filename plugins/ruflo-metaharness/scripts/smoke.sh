@@ -191,6 +191,19 @@ grep -q "execCli(\[\s*'-y'\s*,\s*'metaharness@latest'" "$F" 2>/dev/null || \
 grep -q "cwd: opts" "$F" || miss="$miss no-cwd-passthrough"
 [[ -z "$miss" ]] && ok || bad "$miss"
 
+step "17z5. CLI dispatcher round-trips flags (iter 42 — fixes existing bug)"
+miss=""
+DISP="$ROOT/../../v3/@claude-flow/cli/src/commands/metaharness.ts"
+# Reconstruction logic literal markers (anti-deletion)
+grep -q "reconstructedFlags" "$DISP" 2>/dev/null || miss="$miss no-reconstruction"
+grep -q "ctxFlags" "$DISP" 2>/dev/null || miss="$miss no-ctx-flags-read"
+grep -q "toKebab" "$DISP" 2>/dev/null || miss="$miss no-kebab-helper"
+# SKIP_KEYS list documents which flags don't propagate
+grep -q "SKIP_KEYS" "$DISP" 2>/dev/null || miss="$miss no-skip-set"
+# Comment explains the fix
+grep -q "iter 42" "$DISP" 2>/dev/null || miss="$miss no-iter42-marker"
+[[ -z "$miss" ]] && ok || bad "$miss"
+
 step "17z4. bench-similarity.mjs — perf characterization + regression gate (iter 41)"
 F="$ROOT/scripts/bench-similarity.mjs"
 miss=""

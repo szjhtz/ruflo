@@ -284,3 +284,39 @@ jobs:
             echo "✓ structural-distance alert correctly exited non-zero (got $?)"
           fi
 
+      - name: Performance gate — sub-10μs mean per similarity() call (iter 41)
+        # CI runners are slower than Apple-Silicon baseline (~0.4μs); 10μs
+        # ceiling gives ~25× headroom while still catching ~10× regressions.
+        # 100k iters keeps the job fast (~50ms total work).
+        run: |
+          node plugins/ruflo-metaharness/scripts/bench-similarity.mjs \
+            --iters 100000 \
+            --max-mean-us 10
+
+      - name: Build CLI dist (for dispatcher round-trip)
+        run: |
+          cd v3/@claude-flow/cli
+          npm install --no-audit --no-fund --ignore-scripts --silent
+          npm run build
+
+      - name: CLI dispatcher round-trip — `node bin/cli.js metaharness similarity` (iter 36)
+        # Proves the iter-36 SUBCOMMANDS entry actually dispatches at the
+        # CLI surface, not just at the script. Closes the gap between
+        # "the script works in isolation" and "the user-facing command works".
+        run: |
+          set -e
+          OUT=$(node v3/@claude-flow/cli/bin/cli.js metaharness similarity \
+            --a /tmp/a.json --b /tmp/b.json --format json)
+          echo "$OUT" | head -20
+          echo "$OUT" | grep -q '"overall"' || { echo "FAIL: dispatcher did not emit overall"; exit 1; }
+          echo "$OUT" | grep -q '"adr": "ADR-152"' || { echo "FAIL: dispatcher output missing ADR tag"; exit 1; }
+          echo "✓ CLI dispatcher round-trip green"
+
+      - name: CLI help lists similarity subcommand
+        # Anti-regression on the help text (iter 36 added this line).
+        run: |
+          set -e
+          OUT=$(node v3/@claude-flow/cli/bin/cli.js metaharness 2>&1 || true)
+          echo "$OUT" | grep -q "similarity" || { echo "FAIL: help text dropped similarity"; exit 1; }
+          echo "✓ help text references similarity subcommand"
+
