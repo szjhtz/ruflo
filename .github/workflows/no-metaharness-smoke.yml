@@ -98,15 +98,39 @@ jobs:
           # Disable network-cache to ensure the npx miss is fresh
           export NPX_NO_LOCAL=1
 
-          for skill in score genome mcp-scan threat-model; do
+          # iter 55 — expanded from 4 to 7 skills. The new entries are:
+          # oia-audit (composite, calls all 5 sub-skills), mint (scaffolds
+          # via `metaharness new`), drift-from-history (composes 3 scripts
+          # — needs oia-audit to gracefully degrade for the chain to too).
+          # Each skill needs a per-skill argv recipe to match its required
+          # flags (e.g. mint needs --name; drift-from-history needs --dry-run).
+          declare -A SKILL_ARGS=(
+            [score]="--format json"
+            [genome]="--format json"
+            [mcp-scan]="--format json"
+            [threat-model]="--format json"
+            [oia-audit]="--dry-run --format json"
+            [mint]="--name no-metaharness-drill --template vertical:coding --format json"
+            [drift-from-history]="--dry-run --threshold 0.5 --format json"
+          )
+          for skill in score genome mcp-scan threat-model oia-audit mint drift-from-history; do
             echo "--- exercising ${skill}.mjs with unreachable registry ---"
-            OUT=$(node plugins/ruflo-metaharness/scripts/$skill.mjs --format json 2>&1 || echo '__NON_ZERO_EXIT__')
-            EXIT=$(node plugins/ruflo-metaharness/scripts/$skill.mjs --format json > /dev/null 2>&1; echo $?)
+            ARGS="${SKILL_ARGS[$skill]}"
+            OUT=$(node plugins/ruflo-metaharness/scripts/$skill.mjs $ARGS 2>&1 || echo '__NON_ZERO_EXIT__')
+            EXIT=$(node plugins/ruflo-metaharness/scripts/$skill.mjs $ARGS > /dev/null 2>&1; echo $?)
             echo "$OUT" | head -10
             echo "exit: $EXIT"
-            # Assert: exit MUST be 0 (graceful degradation), OUT MUST contain "degraded"
-            if [ "$EXIT" != "0" ]; then
-              echo "FAIL: $skill exited $EXIT but graceful-degradation requires 0"
+            # Assert: graceful path means exit 0 (or 3 for drift-from-history
+            # which intentionally signals "test-cannot-run" via exit 3 per
+            # iter 53's 4-code semantic). Both must emit a degraded payload.
+            ACCEPTABLE_EXITS="0"
+            if [ "$skill" = "drift-from-history" ]; then ACCEPTABLE_EXITS="0 3"; fi
+            MATCHED=0
+            for ok in $ACCEPTABLE_EXITS; do
+              if [ "$EXIT" = "$ok" ]; then MATCHED=1; break; fi
+            done
+            if [ "$MATCHED" = "0" ]; then
+              echo "FAIL: $skill exited $EXIT but graceful-degradation requires one of: $ACCEPTABLE_EXITS"
               exit 1
             fi
             if ! echo "$OUT" | grep -q '"degraded"'; then
@@ -114,4 +138,4 @@ jobs:
               exit 1
             fi
           done
-          echo "✓ All skills gracefully degraded when metaharness was unreachable."
+          echo "✓ All 7 skills gracefully degraded when metaharness was unreachable."
