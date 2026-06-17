@@ -191,6 +191,41 @@ grep -q "execCli(\[\s*'-y'\s*,\s*'metaharness@latest'" "$F" 2>/dev/null || \
 grep -q "cwd: opts" "$F" || miss="$miss no-cwd-passthrough"
 [[ -z "$miss" ]] && ok || bad "$miss"
 
+step "17z67. SKILL.md frontmatter has non-empty allowed-tools (iter 104)"
+miss=""
+# Every SKILL.md needs `allowed-tools:` populated. Empty/missing means
+# Claude Code can't run the skill (no tools authorized). Per iter-87's
+# skill-audit pattern (which this gate codifies for the metaharness
+# skills specifically).
+SKILLS_DIR="$ROOT/skills"
+KNOWN_TOOLS="Bash|Read|Write|Edit|MultiEdit|Glob|Grep|Task|TaskCreate"
+COUNT=0
+for d in "$SKILLS_DIR"/*/; do
+  COUNT=$((COUNT + 1))
+  base=$(basename "$d")
+  # Frontmatter field must exist and have a non-empty value
+  line=$(grep "^allowed-tools:" "$d/SKILL.md" 2>/dev/null | head -1)
+  if [[ -z "$line" ]]; then
+    miss="$miss ${base}-no-allowed-tools-field"
+    continue
+  fi
+  # Strip key + whitespace; rest is the value
+  value=$(echo "$line" | sed -E 's/^allowed-tools:[ \t]*//' | xargs)
+  if [[ -z "$value" ]]; then
+    miss="$miss ${base}-allowed-tools-empty"
+    continue
+  fi
+  # Each comma-separated token must be a known tool name
+  for t in $(echo "$value" | tr ',' ' '); do
+    t_trimmed=$(echo "$t" | xargs)
+    if ! echo "$t_trimmed" | grep -qE "^(${KNOWN_TOOLS})$"; then
+      miss="$miss ${base}-unknown-tool:${t_trimmed}"
+    fi
+  done
+done
+[[ "$COUNT" -ge 6 ]] || miss="$miss skill-count-too-low:$COUNT"
+[[ -z "$miss" ]] && ok || bad "$miss"
+
 step "17z66. SKILL.md frontmatter name matches directory name (iter 103)"
 miss=""
 # Skills are auto-discovered by Claude Code via the .claude/skills
