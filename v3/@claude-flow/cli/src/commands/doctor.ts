@@ -133,6 +133,85 @@ async function checkConfigFile(): Promise<HealthCheck> {
 }
 
 // Check daemon status
+/**
+ * #2448 — Detect the runaway `npx @claude-flow/cli@latest` statusLine / hook
+ * commands left over in `.claude/settings.json` from pre-#2337 installs.
+ *
+ * These fire on every Claude Code event (statusLine refires every few hundred
+ * ms, hooks fire per tool-use), each spawning a cold Node process + npm
+ * registry round-trip. On the reporter's 48 GB macOS box this produced
+ * load average 49, jetsam, and a kernel watchdog panic two minutes after
+ * boot. Severity is CRITICAL when present; users who installed before #2337
+ * and never re-ran `ruflo init` still have it.
+ *
+ * Detection only — does not modify settings. Fix path is `ruflo init` (the
+ * executor's migration logic, also patched in #2448, will now regenerate
+ * the broken commands).
+ */
+async function checkStaleSettingsNpx(): Promise<HealthCheck> {
+  // Same regex pattern the executor migration uses — kept in sync.
+  const BROKEN_RE = /npx\s+(?:--?\S+\s+)*@?claude-flow\/cli@latest\s+hooks\s+(?:statusline|\S+)/;
+
+  // Look in both project-local and home-dir settings.
+  const candidates = [
+    join(process.cwd(), '.claude', 'settings.json'),
+    join(process.env.HOME ?? '', '.claude', 'settings.json'),
+  ].filter((p, i, a) => p && a.indexOf(p) === i);
+
+  const offenders: Array<{ path: string; where: string }> = [];
+  for (const settingsPath of candidates) {
+    if (!existsSync(settingsPath)) continue;
+    let settings: Record<string, unknown>;
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    } catch {
+      continue; // checkConfigFile reports JSON errors separately
+    }
+
+    // statusLine.command
+    const sl = settings.statusLine as { command?: string } | undefined;
+    if (sl?.command && BROKEN_RE.test(sl.command)) {
+      offenders.push({ path: settingsPath, where: 'statusLine' });
+    }
+
+    // hooks.<event>[].hooks[].command
+    const hooks = settings.hooks as Record<string, Array<{ hooks?: Array<{ command?: string }> }>> | undefined;
+    if (hooks) {
+      for (const [eventName, groups] of Object.entries(hooks)) {
+        if (!Array.isArray(groups)) continue;
+        for (const group of groups) {
+          if (!Array.isArray(group.hooks)) continue;
+          for (const h of group.hooks) {
+            if (typeof h?.command === 'string' && BROKEN_RE.test(h.command)) {
+              offenders.push({ path: settingsPath, where: `hooks.${eventName}` });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (offenders.length === 0) {
+    return { name: 'Stale npx@latest in settings (#2448)', status: 'pass', message: 'no runaway commands detected' };
+  }
+
+  // Group by file for readable output
+  const byFile = offenders.reduce((acc, o) => {
+    (acc[o.path] ??= []).push(o.where);
+    return acc;
+  }, {} as Record<string, string[]>);
+  const summary = Object.entries(byFile)
+    .map(([p, wheres]) => `${p} [${[...new Set(wheres)].join(', ')}]`)
+    .join('; ');
+
+  return {
+    name: 'Stale npx@latest in settings (#2448)',
+    status: 'fail',
+    message: `CRITICAL — runaway \`npx @claude-flow/cli@latest\` commands detected: ${summary}`,
+    fix: 'Re-run `npx ruflo init` to migrate (the v3.13.3+ init migrator regenerates these to local-helper form). On macOS this prevents the process-storm / kernel-panic class reported in #2448.',
+  };
+}
+
 async function checkDaemonStatus(): Promise<HealthCheck> {
   try {
     const pidFile = '.claude-flow/daemon.pid';
@@ -1002,6 +1081,7 @@ export const doctorCommand: Command = {
       checkGit,
       checkGitRepo,
       checkConfigFile,
+      checkStaleSettingsNpx, // #2448 — runaway `npx @latest` in statusLine/hooks
       checkDaemonStatus,
       checkMemoryDatabase,
       checkApiKeys,
@@ -1023,6 +1103,7 @@ export const doctorCommand: Command = {
       'npm': checkNpmVersion,
       'claude': checkClaudeCode,
       'config': checkConfigFile,
+      'stale-settings': checkStaleSettingsNpx, // #2448
       'daemon': checkDaemonStatus,
       'memory': checkMemoryDatabase,
       'api': checkApiKeys,
